@@ -360,22 +360,36 @@ function App() {
 
   function retryFailedSession(sessionId) {
     const fallbackModel = config?.fallbackModel || "gpt-image-2";
+    const target = sessionsRef.current.find((session) => session.id === sessionId);
+    if (!target || target.status !== "failed") {
+      return;
+    }
+
+    const retrySession = {
+      ...target,
+      model: fallbackModel,
+      retryCount: (target.retryCount || 0) + 1,
+      message: "Dang thu lai",
+      progress: getProgressSnapshot(0, target.files.length),
+      results: [],
+      summary: null,
+    };
+    const hasProcessingSession = sessionsRef.current.some((session) => session.status === "processing");
+
     setSessions((current) =>
       current.map((session) =>
-        session.id === sessionId && session.status === "failed"
+        session.id === sessionId
           ? {
-              ...session,
-              status: "queued",
-              model: fallbackModel,
-              retryCount: (session.retryCount || 0) + 1,
-              message: `Se thu lai bang ${fallbackModel}`,
-              progress: getProgressSnapshot(0, session.files.length),
-              results: [],
-              summary: null,
+              ...retrySession,
+              status: hasProcessingSession ? "queued" : "failed",
             }
           : session,
       ),
     );
+
+    if (!hasProcessingSession) {
+      void processSession(retrySession);
+    }
   }
 
   async function processSession(session) {
@@ -647,7 +661,7 @@ function App() {
                     {session.status === "failed" ? (
                       <button className="retry-session" type="button" onClick={() => retryFailedSession(session.id)}>
                         <RotateCcw size={15} />
-                        Thu lai
+                        Thử lại
                       </button>
                     ) : null}
                   </article>
