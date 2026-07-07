@@ -5,6 +5,7 @@ import {
   ImagePlus,
   Loader2,
   Phone,
+  RotateCcw,
   Send,
   Sparkles,
   Trash2,
@@ -15,6 +16,7 @@ const maxFiles = 4;
 const maxCompressedImageBytes = 900 * 1024;
 const maxCompressedImageSide = 1600;
 const estimatedRunMs = 264000;
+const requestTimeoutMs = 290000;
 const wechatQrPayload = "https://u.wechat.com/kNE1QLDxXUun5q04_FphdtE?s=2";
 
 const progressStages = [
@@ -65,6 +67,19 @@ function wait(ms) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+async function readApiPayload(response) {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("Server tra ve du lieu khong hop le. Co the request da bi cat truoc khi hoan thanh.");
+  }
 }
 
 function makeSessionId() {
@@ -242,9 +257,6 @@ function ProgressConsole({ progress }) {
       <div className="progress-track" aria-label="Tiến trình xử lý ảnh">
         <div className="progress-fill" style={{ width: `${progress.percent}%` }} />
       </div>
-      <div className="progress-meta">
-        <span>{progress.detail}</span>
-      </div>
       <div className="progress-steps">
         {steps.map(([label, threshold]) => (
           <span className={progress.percent >= threshold ? "done" : ""} key={label}>
@@ -286,6 +298,7 @@ function App() {
       .catch(() => {
         setConfig({
           model: "gpt-image-2-all",
+          fallbackModel: "gpt-image-2",
           target: { label: "4x6 cm", width: 945, height: 1417, dpi: 600 },
         });
       });
@@ -343,10 +356,30 @@ function App() {
       target.files.forEach((file) => URL.revokeObjectURL(file.previewUrl));
       return current.filter((session) => session.id !== sessionId);
     });
-    setMessage("Đã hủy session đang chờ.");
+  }
+
+  function retryFailedSession(sessionId) {
+    const fallbackModel = config?.fallbackModel || "gpt-image-2";
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId && session.status === "failed"
+          ? {
+              ...session,
+              status: "queued",
+              model: fallbackModel,
+              retryCount: (session.retryCount || 0) + 1,
+              message: `Se thu lai bang ${fallbackModel}`,
+              progress: getProgressSnapshot(0, session.files.length),
+              results: [],
+              summary: null,
+            }
+          : session,
+      ),
+    );
   }
 
   async function processSession(session) {
+    const sessionModel = session.model || config?.model || "gpt-image-2-all";
     setActiveSessionId(session.id);
     updateSession(session.id, {
       status: "processing",
@@ -364,13 +397,17 @@ function App() {
     const formData = new FormData();
     session.files.forEach((file) => formData.append("images", file));
     formData.append("outputFormat", session.outputFormat);
+    formData.append("model", sessionModel);
+    const abortController = new AbortController();
+    const requestTimeout = window.setTimeout(() => abortController.abort(), requestTimeoutMs);
 
     try {
       const response = await fetch("/api/process", {
         method: "POST",
         body: formData,
+        signal: abortController.signal,
       });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) {
         throw new Error(payload.error || "Không xử lý được ảnh.");
       }
@@ -390,11 +427,18 @@ function App() {
         status: hasFailure ? "failed" : "done",
         results: payload.results || [],
         summary: payload.summary,
+        message: hasFailure ? "Chua thanh cong. Ban co the thu lai bang model du phong." : "Da co anh ket qua",
         message: hasFailure ? "Một số ảnh chưa xử lý được" : "Đã có ảnh kết quả",
+        message: hasFailure ? "Chua thanh cong. Ban co the thu lai bang model du phong." : "Da co anh ket qua",
       });
     } catch (error) {
+      const errorMessage =
+        error.name === "AbortError"
+          ? "Chua thanh cong sau 290 giay. Ban co the thu lai bang model du phong."
+          : error.message;
       updateSession(session.id, {
         status: "failed",
+        results: [],
         results: [
           {
             originalName: `${session.files.length} ảnh tham chiếu`,
@@ -407,9 +451,11 @@ function App() {
           note: "Server đã trả lỗi. Vui lòng kiểm tra thông báo và thử lại sau.",
           detail: "Lượt xử lý đã dừng",
         },
-        message: error.message,
+        results: [],
+        message: errorMessage,
       });
     } finally {
+      window.clearTimeout(requestTimeout);
       window.clearInterval(timer);
       setActiveSessionId("");
     }
@@ -481,6 +527,8 @@ function App() {
         name: `Session ${sessionNumber}`,
         files: sessionFiles,
         outputFormat,
+        model: config?.model || "gpt-image-2-all",
+        retryCount: 0,
         status: "queued",
         message: "Đã đưa vào hàng chờ",
         progress: getProgressSnapshot(0, sessionFiles.length),
@@ -493,7 +541,6 @@ function App() {
     if (inputRef.current) {
       inputRef.current.value = "";
     }
-    setMessage(`Đã tạo Session ${sessionNumber} với ${sessionFiles.length} ảnh tham chiếu.`);
   }
 
   function resetAll() {
@@ -507,13 +554,15 @@ function App() {
     setMessage("");
   }
 
-  const resultSessions = sessions.filter((session) => session.status === "done" || session.status === "failed");
+  const resultSessions = sessions.filter((session) => session.status === "done");
   const resultItems = resultSessions.flatMap((session) =>
-    (session.results || []).map((item) => ({
-      ...item,
-      sessionName: session.name,
-      sessionId: session.id,
-    })),
+    (session.results || [])
+      .filter((item) => item.url)
+      .map((item) => ({
+        ...item,
+        sessionName: session.name,
+        sessionId: session.id,
+      })),
   );
 
   return (
@@ -564,8 +613,6 @@ function App() {
           </div>
         </header>
 
-        {message ? <div className={`notice ${summary.failed ? "warn" : ""}`}>{message}</div> : null}
-
         <div className="workspace-grid sessions-layout">
           <section className="panel session-panel">
             <div className="panel-head">
@@ -579,7 +626,6 @@ function App() {
                     <div className="session-card-head">
                       <div>
                         <strong>{session.name}</strong>
-                        <span>{session.files.length} ảnh input · {session.outputFormat.toUpperCase()}</span>
                       </div>
                       <SessionStatus status={session.status} />
                     </div>
@@ -596,6 +642,12 @@ function App() {
                     {session.status === "queued" ? (
                       <button className="cancel-session" type="button" onClick={() => cancelQueuedSession(session.id)}>
                         Hủy session
+                      </button>
+                    ) : null}
+                    {session.status === "failed" ? (
+                      <button className="retry-session" type="button" onClick={() => retryFailedSession(session.id)}>
+                        <RotateCcw size={15} />
+                        Thu lai
                       </button>
                     ) : null}
                   </article>

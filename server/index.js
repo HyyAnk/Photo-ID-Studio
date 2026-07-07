@@ -26,7 +26,8 @@ const generationSize = "1024x1536";
 const apiBaseUrl = process.env.SHOPAIKEY_BASE_URL || "https://direct.shopaikey.com/v1";
 const fallbackApiBaseUrl = process.env.SHOPAIKEY_FALLBACK_BASE_URL || "https://api.shopaikey.com/v1";
 const imageModel = process.env.SHOPAIKEY_IMAGE_MODEL || "gpt-image-2-all";
-const imageRequestTimeoutMs = Number(process.env.SHOPAIKEY_IMAGE_TIMEOUT_MS || 360000);
+const fallbackImageModel = process.env.SHOPAIKEY_FALLBACK_IMAGE_MODEL || "gpt-image-2";
+const imageRequestTimeoutMs = Number(process.env.SHOPAIKEY_IMAGE_TIMEOUT_MS || 290000);
 const port = Number(process.env.PORT || 3001);
 
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -75,14 +76,22 @@ function getApiBaseUrls() {
   return [...new Set([apiBaseUrl, fallbackApiBaseUrl].filter(Boolean))];
 }
 
-function getClient(baseURL) {
+function getImageModels() {
+  return [...new Set([imageModel, fallbackImageModel].filter(Boolean))];
+}
+
+function getClient(baseURL, timeout = imageRequestTimeoutMs) {
   ensureConfig();
   return new OpenAI({
     apiKey: process.env.SHOPAIKEY_API_KEY,
     baseURL,
     maxRetries: 0,
-    timeout: imageRequestTimeoutMs,
+    timeout,
   });
+}
+
+function isTimeoutError(error) {
+  return /timeout|timed out|aborted/i.test(`${error?.name || ""} ${error?.message || ""}`);
 }
 
 async function imageResponseToBuffer(item) {
@@ -131,55 +140,78 @@ function safeBaseName(fileName) {
   );
 }
 
-async function editImageSetWithFallback(files, stepContext) {
+async function editImageSetWithFallback(files, stepContext, models = [imageModel]) {
   const baseUrls = getApiBaseUrls();
+  const startedAt = Date.now();
   let lastError = null;
   let retries = 0;
 
-  for (let index = 0; index < baseUrls.length; index += 1) {
-    const baseURL = baseUrls[index];
-    const endpointLabel = baseURL.replace(/^https?:\/\//, "");
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
 
-    log("STEP", `Thu ShopAIKey endpoint ${endpointLabel} voi ${files.length} anh input`, {
-      ...stepContext,
-      step: `image_edit_attempt_${index + 1}`,
-      style: "step",
-    });
-
-    const streams = files.map((file) => fs.createReadStream(file.path));
-    try {
-      const client = getClient(baseURL);
-      return {
-        response: await client.images.edit({
-          model: imageModel,
-          image: streams,
-          prompt: studioPrompt,
-          size: generationSize,
-          quality: "high",
-          output_format: "png",
-        }),
-        retries,
-      };
-    } catch (error) {
-      lastError = error;
-      if (index < baseUrls.length - 1) {
-        retries += 1;
-        log("WARN", `${error.message}. Chuyen sang endpoint du phong.`, {
-          ...stepContext,
-          step: "image_edit_retry",
-          style: "warning",
-        });
+    for (let urlIndex = 0; urlIndex < baseUrls.length; urlIndex += 1) {
+      const remainingMs = imageRequestTimeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 1000) {
+        const error = new Error(`Qua ${Math.round(imageRequestTimeoutMs / 1000)} giay nhung model chua tra ket qua.`);
+        error.statusCode = 504;
+        throw error;
       }
-    } finally {
-      streams.forEach((stream) => stream.destroy());
+
+      const baseURL = baseUrls[urlIndex];
+      const endpointLabel = baseURL.replace(/^https?:\/\//, "");
+      const attempt = modelIndex * baseUrls.length + urlIndex + 1;
+      const hasNextAttempt = modelIndex < models.length - 1 || urlIndex < baseUrls.length - 1;
+
+      log("STEP", `Thu model ${model} tai endpoint ${endpointLabel} voi ${files.length} anh input`, {
+        ...stepContext,
+        step: `image_edit_attempt_${attempt}`,
+        style: "step",
+      });
+
+      const streams = files.map((file) => fs.createReadStream(file.path));
+      try {
+        const client = getClient(baseURL, remainingMs);
+        return {
+          response: await client.images.edit({
+            model,
+            image: streams,
+            prompt: studioPrompt,
+            size: generationSize,
+            quality: "high",
+            output_format: "png",
+          }),
+          model,
+          retries,
+        };
+      } catch (error) {
+        lastError = error;
+        if (isTimeoutError(error)) {
+          error.statusCode = 504;
+        }
+
+        if (hasNextAttempt && !isTimeoutError(error)) {
+          retries += 1;
+          log("WARN", `${error.message}. Thu lai voi endpoint/model du phong.`, {
+            ...stepContext,
+            step: "image_edit_retry",
+            style: "warning",
+          });
+        }
+
+        if (isTimeoutError(error)) {
+          break;
+        }
+      } finally {
+        streams.forEach((stream) => stream.destroy());
+      }
     }
   }
 
   const detail = lastError?.message ? ` Loi cuoi: ${lastError.message}` : "";
-  throw new Error(`Khong ket noi duoc ShopAIKey sau khi thu ${baseUrls.length} endpoint.${detail}`);
+  throw new Error(`Khong ket noi duoc ShopAIKey sau khi thu ${models.length} model va ${baseUrls.length} endpoint.${detail}`);
 }
 
-async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResultDir) {
+async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResultDir, requestedModel) {
   const stepContext = {
     workerId,
     profileId: jobId,
@@ -191,9 +223,9 @@ async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResu
     style: "step",
   });
 
-  const { response, retries } = await editImageSetWithFallback(files, stepContext);
+  const { response, retries, model } = await editImageSetWithFallback(files, stepContext, [requestedModel]);
 
-  log("STEP", "Chuan hoa 1 anh ket qua ve 945x1417 px, 600 DPI", {
+  log("STEP", `Chuan hoa 1 anh ket qua tu model ${model} ve 945x1417 px, 600 DPI`, {
     ...stepContext,
     step: "normalize_4x6",
     style: "step",
@@ -225,6 +257,7 @@ async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResu
       height: targetHeight,
       dpi: targetDensity,
       format: extension,
+      model,
     },
     retries,
   };
@@ -233,6 +266,7 @@ async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResu
 app.get("/api/config", (request, response) => {
   response.json({
     model: imageModel,
+    fallbackModel: fallbackImageModel,
     baseUrl: apiBaseUrl.replace(/^https?:\/\//, ""),
     fallbackBaseUrl: fallbackApiBaseUrl.replace(/^https?:\/\//, ""),
     generationSize,
@@ -254,6 +288,7 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
   const outputFormat = ["png", "jpg", "jpeg"].includes(request.body.outputFormat)
     ? request.body.outputFormat
     : "jpg";
+  const requestedModel = request.body.model || imageModel;
   const workerId = `run-${startedAt}`;
 
   log("INFO", "Khoi dong luot xu ly anh the", {
@@ -261,7 +296,7 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
     profileId: jobId,
     step: "startup",
   });
-  log("INFO", `Config: input_images=${files.length}, output_images=1, mode=reference_set, concurrency=1, method=ShopAIKey images.edit, model=${imageModel}, size=${generationSize}, output=${outputFormat}`, {
+  log("INFO", `Config: input_images=${files.length}, output_images=1, mode=reference_set, concurrency=1, method=ShopAIKey images.edit, model=${requestedModel}, primary_model=${imageModel}, fallback_model=${fallbackImageModel}, timeout=${imageRequestTimeoutMs}ms, size=${generationSize}, output=${outputFormat}`, {
     workerId,
     step: "config",
   });
@@ -272,6 +307,11 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
       return;
     }
 
+    if (!getImageModels().includes(requestedModel)) {
+      response.status(400).json({ error: "Model khong nam trong cau hinh cho phep." });
+      return;
+    }
+
     await fs.promises.mkdir(jobResultDir, { recursive: true });
 
     let retries = 0;
@@ -279,7 +319,7 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
     let failed = 0;
 
     try {
-      const processed = await processPhotoProduct(files, outputFormat, workerId, jobId, jobResultDir);
+      const processed = await processPhotoProduct(files, outputFormat, workerId, jobId, jobResultDir, requestedModel);
       result = processed.result;
       retries = processed.retries;
     } catch (error) {
@@ -316,6 +356,7 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
         failed,
         skipped: 0,
         retries,
+        model: requestedModel,
         elapsedMs,
       },
     });
@@ -358,7 +399,7 @@ app.listen(port, "127.0.0.1", () => {
   log("INFO", `API server san sang tai http://127.0.0.1:${port}`, {
     step: "startup",
   });
-  log("INFO", `Startup summary: input_images=1-4, output_images=1, execution_mode=api, concurrency=1, automation_method=HTTP API, model=${imageModel}`, {
+  log("INFO", `Startup summary: input_images=1-4, output_images=1, execution_mode=api, concurrency=1, automation_method=HTTP API, model=${imageModel}, fallback_model=${fallbackImageModel}, timeout=${imageRequestTimeoutMs}ms`, {
     step: "startup_summary",
   });
 });

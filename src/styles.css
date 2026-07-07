@@ -473,6 +473,10 @@ button:disabled {
 }
 
 .cancel-session {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   justify-self: start;
   min-height: 30px;
   padding: 0 10px;
@@ -488,6 +492,28 @@ button:disabled {
   color: #ffffff;
   background: #dc2626;
   border-color: #dc2626;
+}
+
+.retry-session {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  justify-self: start;
+  min-height: 32px;
+  padding: 0 11px;
+  color: #166534;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.retry-session:hover {
+  color: #ffffff;
+  background: #16a34a;
+  border-color: #16a34a;
 }
 
 .session-card .progress-console {
@@ -898,20 +924,12 @@ button:disabled {
   animation: progress-shine 1.8s linear infinite;
 }
 
-.progress-meta,
 .progress-steps {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: space-between;
-}
-
-.progress-meta span {
-  max-width: none;
-  color: #667085;
-  font-size: 11px;
-  font-weight: 800;
 }
 
 .progress-steps {
