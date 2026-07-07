@@ -13,8 +13,13 @@ export const generationSize = "1024x1536";
 
 const apiBaseUrl = process.env.SHOPAIKEY_BASE_URL || "https://direct.shopaikey.com/v1";
 const fallbackApiBaseUrl = process.env.SHOPAIKEY_FALLBACK_BASE_URL || "https://api.shopaikey.com/v1";
-const imageModel = process.env.SHOPAIKEY_IMAGE_MODEL || "gpt-image-2-all";
-const imageRequestTimeoutMs = Number(process.env.SHOPAIKEY_IMAGE_TIMEOUT_MS || 360000);
+const defaultImageModel = "gpt-image-2";
+const imageModel = process.env.SHOPAIKEY_IMAGE_MODEL === "gpt-image-2-all" ? defaultImageModel : process.env.SHOPAIKEY_IMAGE_MODEL || defaultImageModel;
+const fallbackImageModel =
+  process.env.SHOPAIKEY_FALLBACK_IMAGE_MODEL === "gpt-image-2-all"
+    ? defaultImageModel
+    : process.env.SHOPAIKEY_FALLBACK_IMAGE_MODEL || defaultImageModel;
+const imageRequestTimeoutMs = Number(process.env.SHOPAIKEY_IMAGE_TIMEOUT_MS || 290000);
 
 const studioPrompt = `
 Create exactly one professional Vietnamese ID photo from the uploaded reference images of the same person.
@@ -30,6 +35,7 @@ Final image should be suitable for official ID/passport-style printing.
 export function getPublicConfig() {
   return {
     model: imageModel,
+    fallbackModel: fallbackImageModel,
     baseUrl: apiBaseUrl.replace(/^https?:\/\//, ""),
     fallbackBaseUrl: fallbackApiBaseUrl.replace(/^https?:\/\//, ""),
     generationSize,
@@ -57,14 +63,22 @@ function getApiBaseUrls() {
   return [...new Set([apiBaseUrl, fallbackApiBaseUrl].filter(Boolean))];
 }
 
-function getClient(baseURL) {
+export function getImageModels() {
+  return [...new Set([imageModel, fallbackImageModel].filter(Boolean))];
+}
+
+function getClient(baseURL, timeout = imageRequestTimeoutMs) {
   ensureConfig();
   return new OpenAI({
     apiKey: process.env.SHOPAIKEY_API_KEY,
     baseURL,
     maxRetries: 0,
-    timeout: imageRequestTimeoutMs,
+    timeout,
   });
+}
+
+function isTimeoutError(error) {
+  return /timeout|timed out|aborted/i.test(`${error?.name || ""} ${error?.message || ""}`);
 }
 
 async function imageResponseToBuffer(item) {
@@ -109,55 +123,78 @@ function safeBaseName(fileName) {
   );
 }
 
-async function editImageSetWithFallback(files, stepContext) {
+async function editImageSetWithFallback(files, stepContext, models = [imageModel]) {
   const baseUrls = getApiBaseUrls();
+  const startedAt = Date.now();
   let lastError = null;
   let retries = 0;
 
-  for (let index = 0; index < baseUrls.length; index += 1) {
-    const baseURL = baseUrls[index];
-    const endpointLabel = baseURL.replace(/^https?:\/\//, "");
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
 
-    log("STEP", `Trying ShopAIKey endpoint ${endpointLabel} with ${files.length} input image(s)`, {
-      ...stepContext,
-      step: `image_edit_attempt_${index + 1}`,
-      style: "step",
-    });
-
-    const streams = files.map((file) => fs.createReadStream(file.filepath));
-    try {
-      const client = getClient(baseURL);
-      return {
-        response: await client.images.edit({
-          model: imageModel,
-          image: streams,
-          prompt: studioPrompt,
-          size: generationSize,
-          quality: "high",
-          output_format: "png",
-        }),
-        retries,
-      };
-    } catch (error) {
-      lastError = error;
-      if (index < baseUrls.length - 1) {
-        retries += 1;
-        log("WARN", `${error.message}. Switching to fallback endpoint.`, {
-          ...stepContext,
-          step: "image_edit_retry",
-          style: "warning",
-        });
+    for (let urlIndex = 0; urlIndex < baseUrls.length; urlIndex += 1) {
+      const remainingMs = imageRequestTimeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 1000) {
+        const error = new Error(`Qua ${Math.round(imageRequestTimeoutMs / 1000)} giay nhung model chua tra ket qua.`);
+        error.statusCode = 504;
+        throw error;
       }
-    } finally {
-      streams.forEach((stream) => stream.destroy());
+
+      const baseURL = baseUrls[urlIndex];
+      const endpointLabel = baseURL.replace(/^https?:\/\//, "");
+      const attempt = modelIndex * baseUrls.length + urlIndex + 1;
+      const hasNextAttempt = modelIndex < models.length - 1 || urlIndex < baseUrls.length - 1;
+
+      log("STEP", `Trying model ${model} at ShopAIKey endpoint ${endpointLabel} with ${files.length} input image(s)`, {
+        ...stepContext,
+        step: `image_edit_attempt_${attempt}`,
+        style: "step",
+      });
+
+      const streams = files.map((file) => fs.createReadStream(file.filepath));
+      try {
+        const client = getClient(baseURL, remainingMs);
+        return {
+          response: await client.images.edit({
+            model,
+            image: streams,
+            prompt: studioPrompt,
+            size: generationSize,
+            quality: "high",
+            output_format: "png",
+          }),
+          model,
+          retries,
+        };
+      } catch (error) {
+        lastError = error;
+        if (isTimeoutError(error)) {
+          error.statusCode = 504;
+        }
+
+        if (hasNextAttempt && !isTimeoutError(error)) {
+          retries += 1;
+          log("WARN", `${error.message}. Switching to fallback endpoint/model.`, {
+            ...stepContext,
+            step: "image_edit_retry",
+            style: "warning",
+          });
+        }
+
+        if (isTimeoutError(error)) {
+          break;
+        }
+      } finally {
+        streams.forEach((stream) => stream.destroy());
+      }
     }
   }
 
   const detail = lastError?.message ? ` Last error: ${lastError.message}` : "";
-  throw new Error(`Could not connect to ShopAIKey after ${baseUrls.length} endpoint attempt(s).${detail}`);
+  throw new Error(`Could not connect to ShopAIKey after ${models.length} model and ${baseUrls.length} endpoint attempt(s).${detail}`);
 }
 
-export async function processPhotoProduct(files, outputFormat, workerId) {
+export async function processPhotoProduct(files, outputFormat, workerId, requestedModel = imageModel) {
   const jobId = randomUUID();
   const stepContext = {
     workerId,
@@ -170,9 +207,9 @@ export async function processPhotoProduct(files, outputFormat, workerId) {
     style: "step",
   });
 
-  const { response, retries } = await editImageSetWithFallback(files, stepContext);
+  const { response, retries, model } = await editImageSetWithFallback(files, stepContext, [requestedModel]);
 
-  log("STEP", "Normalizing result to 945x1417 px at 600 DPI", {
+  log("STEP", `Normalizing result from model ${model} to 945x1417 px at 600 DPI`, {
     ...stepContext,
     step: "normalize_4x6",
     style: "step",
@@ -207,6 +244,7 @@ export async function processPhotoProduct(files, outputFormat, workerId) {
       dpi: targetDensity,
       format: extension,
       bytes: normalizedBuffer.length,
+      model,
     },
   };
 }

@@ -4,7 +4,7 @@ import os from "node:os";
 import formidable from "formidable";
 
 import { log } from "../server/logger.js";
-import { processPhotoProduct } from "./_photo-service.js";
+import { getImageModels, processPhotoProduct } from "./_photo-service.js";
 
 export const config = {
   api: {
@@ -69,6 +69,7 @@ export default async function handler(request, response) {
     uploadedFiles = Array.isArray(imageField) ? imageField : [imageField];
     const outputFormatValue = firstValue(parsed.fields.outputFormat);
     const outputFormat = ["png", "jpg", "jpeg"].includes(outputFormatValue) ? outputFormatValue : "jpg";
+    const requestedModel = firstValue(parsed.fields.model) || getImageModels()[0];
 
     log("INFO", "Starting Vercel image processing request", {
       workerId,
@@ -76,7 +77,7 @@ export default async function handler(request, response) {
     });
     log(
       "INFO",
-      `Config: input_images=${uploadedFiles.length}, output_images=1, mode=reference_set, concurrency=1, method=Vercel Function + ShopAIKey images.edit, output=${outputFormat}`,
+      `Config: input_images=${uploadedFiles.length}, output_images=1, mode=reference_set, concurrency=1, method=Vercel Function + ShopAIKey images.edit, model=${requestedModel}, output=${outputFormat}`,
       {
         workerId,
         step: "config",
@@ -88,7 +89,12 @@ export default async function handler(request, response) {
       return;
     }
 
-    const { jobId, retries, result } = await processPhotoProduct(uploadedFiles, outputFormat, workerId);
+    if (!getImageModels().includes(requestedModel)) {
+      response.status(400).json({ error: "Model is not allowed by server config." });
+      return;
+    }
+
+    const { jobId, retries, result } = await processPhotoProduct(uploadedFiles, outputFormat, workerId, requestedModel);
     const elapsedMs = Date.now() - startedAt;
 
     log("DONE", `Summary: total=1, success=1, failed=0, skipped=0, retries=${retries}, elapsed=${elapsedMs}ms`, {
@@ -109,6 +115,7 @@ export default async function handler(request, response) {
         failed: 0,
         skipped: 0,
         retries,
+        model: requestedModel,
         elapsedMs,
       },
     });

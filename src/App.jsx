@@ -17,6 +17,8 @@ const maxCompressedImageBytes = 900 * 1024;
 const maxCompressedImageSide = 1600;
 const estimatedRunMs = 264000;
 const requestTimeoutMs = 290000;
+const maxRetryAttempts = 2;
+const apiBrokenMessage = "Dịch vụ API đang hỏng, liên hệ dev Dư Ngọc Minh Hoàng.";
 const wechatQrPayload = "https://u.wechat.com/kNE1QLDxXUun5q04_FphdtE?s=2";
 
 const progressStages = [
@@ -297,7 +299,7 @@ function App() {
       .then(setConfig)
       .catch(() => {
         setConfig({
-          model: "gpt-image-2-all",
+          model: "gpt-image-2",
           fallbackModel: "gpt-image-2",
           target: { label: "4x6 cm", width: 945, height: 1417, dpi: 600 },
         });
@@ -365,6 +367,13 @@ function App() {
       return;
     }
 
+    if ((target.retryCount || 0) >= maxRetryAttempts) {
+      updateSession(sessionId, {
+        message: apiBrokenMessage,
+      });
+      return;
+    }
+
     const retrySession = {
       ...target,
       model: fallbackModel,
@@ -393,7 +402,7 @@ function App() {
   }
 
   async function processSession(session) {
-    const sessionModel = session.model || config?.model || "gpt-image-2-all";
+    const sessionModel = session.model || config?.model || "gpt-image-2";
     setActiveSessionId(session.id);
     updateSession(session.id, {
       status: "processing",
@@ -437,18 +446,24 @@ function App() {
         message: hasFailure ? "Có lỗi trong kết quả trả về" : "Hoàn tất xử lý ảnh thẻ",
       });
       await wait(650);
+      const failureMessage =
+        hasFailure && (session.retryCount || 0) >= maxRetryAttempts
+          ? apiBrokenMessage
+          : "Chua thanh cong. Ban co the thu lai.";
       updateSession(session.id, {
         status: hasFailure ? "failed" : "done",
         results: payload.results || [],
         summary: payload.summary,
-        message: hasFailure ? "Chua thanh cong. Ban co the thu lai bang model du phong." : "Da co anh ket qua",
+        message: hasFailure ? failureMessage : "Da co anh ket qua",
         message: hasFailure ? "Một số ảnh chưa xử lý được" : "Đã có ảnh kết quả",
-        message: hasFailure ? "Chua thanh cong. Ban co the thu lai bang model du phong." : "Da co anh ket qua",
+        message: hasFailure ? failureMessage : "Da co anh ket qua",
       });
     } catch (error) {
-      const errorMessage =
-        error.name === "AbortError"
-          ? "Chua thanh cong sau 290 giay. Ban co the thu lai bang model du phong."
+      const isFinalRetry = (session.retryCount || 0) >= maxRetryAttempts;
+      const errorMessage = isFinalRetry
+        ? apiBrokenMessage
+        : error.name === "AbortError"
+          ? "Chua thanh cong sau 290 giay. Ban co the thu lai."
           : error.message;
       updateSession(session.id, {
         status: "failed",
@@ -541,7 +556,7 @@ function App() {
         name: `Session ${sessionNumber}`,
         files: sessionFiles,
         outputFormat,
-        model: config?.model || "gpt-image-2-all",
+        model: config?.model || "gpt-image-2",
         retryCount: 0,
         status: "queued",
         message: "Đã đưa vào hàng chờ",
@@ -658,7 +673,7 @@ function App() {
                         Hủy session
                       </button>
                     ) : null}
-                    {session.status === "failed" ? (
+                    {session.status === "failed" && (session.retryCount || 0) < maxRetryAttempts ? (
                       <button className="retry-session" type="button" onClick={() => retryFailedSession(session.id)}>
                         <RotateCcw size={15} />
                         Thử lại

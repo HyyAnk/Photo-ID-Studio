@@ -25,8 +25,12 @@ const targetDensity = 600;
 const generationSize = "1024x1536";
 const apiBaseUrl = process.env.SHOPAIKEY_BASE_URL || "https://direct.shopaikey.com/v1";
 const fallbackApiBaseUrl = process.env.SHOPAIKEY_FALLBACK_BASE_URL || "https://api.shopaikey.com/v1";
-const imageModel = process.env.SHOPAIKEY_IMAGE_MODEL || "gpt-image-2-all";
-const fallbackImageModel = process.env.SHOPAIKEY_FALLBACK_IMAGE_MODEL || "gpt-image-2";
+const defaultImageModel = "gpt-image-2";
+const imageModel = process.env.SHOPAIKEY_IMAGE_MODEL === "gpt-image-2-all" ? defaultImageModel : process.env.SHOPAIKEY_IMAGE_MODEL || defaultImageModel;
+const fallbackImageModel =
+  process.env.SHOPAIKEY_FALLBACK_IMAGE_MODEL === "gpt-image-2-all"
+    ? defaultImageModel
+    : process.env.SHOPAIKEY_FALLBACK_IMAGE_MODEL || defaultImageModel;
 const imageRequestTimeoutMs = Number(process.env.SHOPAIKEY_IMAGE_TIMEOUT_MS || 290000);
 const port = Number(process.env.PORT || 3001);
 
