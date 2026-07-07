@@ -567,19 +567,30 @@ button:disabled {
   padding: 12px;
   color: #172033;
   text-align: left;
-  background: #f8fafc;
-  border: 1px dashed #a9b7c9;
+  background:
+    linear-gradient(135deg, rgba(220, 38, 38, 0.09), rgba(255, 255, 255, 0.96)),
+    #ffffff;
+  border: 1px dashed rgba(220, 38, 38, 0.42);
   border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(220, 38, 38, 0.09);
 }
 
 .upload-picker:hover {
   border-color: #dc2626;
-  background: rgba(220, 38, 38, 0.05);
+  background:
+    linear-gradient(135deg, rgba(220, 38, 38, 0.13), rgba(255, 255, 255, 0.98)),
+    #ffffff;
+  box-shadow: 0 14px 30px rgba(220, 38, 38, 0.13);
 }
 
 .upload-picker svg {
   flex: 0 0 auto;
-  color: #dc2626;
+  box-sizing: content-box;
+  padding: 8px;
+  color: #ffffff;
+  background: #dc2626;
+  border-radius: 8px;
+  box-shadow: 0 10px 20px rgba(220, 38, 38, 0.22);
 }
 
 .upload-picker span {
@@ -590,8 +601,9 @@ button:disabled {
 
 .upload-picker strong {
   color: #172033;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 900;
+  line-height: 1.28;
 }
 
 .upload-picker small {

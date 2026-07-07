@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  BadgeCheck,
   Download,
   FileImage,
   ImagePlus,
@@ -533,10 +532,6 @@ function App() {
         <div className="sidebar-spacer" />
 
         <section className="control-block">
-          <div className="section-title">
-            <span>Thiết lập xuất ảnh</span>
-            <BadgeCheck size={16} />
-          </div>
           <div className="preset-row">
             <span>Kích thước</span>
             <strong>{config?.target?.width || 945} x {config?.target?.height || 1417}px</strong>
@@ -544,10 +539,6 @@ function App() {
           <div className="preset-row">
             <span>DPI</span>
             <strong>{config?.target?.dpi || 600}</strong>
-          </div>
-          <div className="preset-row">
-            <span>Model</span>
-            <strong>{config?.model || "gpt-image-2-all"}</strong>
           </div>
           <div className="format-switch" aria-label="Định dạng xuất ảnh">
             <button className={outputFormat === "png" ? "active" : ""} type="button" onClick={() => setOutputFormat("png")}>
@@ -610,7 +601,7 @@ function App() {
                   </article>
                 ))
               ) : (
-                <div className="empty-state">Chưa có session nào. Upload ảnh rồi bấm xử lý để tạo session.</div>
+                <div className="empty-state">Chưa có session</div>
               )}
             </div>
           </section>
