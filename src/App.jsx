@@ -19,6 +19,10 @@ const estimatedRunMs = 264000;
 const requestTimeoutMs = 290000;
 const maxRetryAttempts = 2;
 const apiBrokenMessage = "Dịch vụ API đang hỏng, liên hệ dev Dư Ngọc Minh Hoàng.";
+const fallbackPhotoModes = [
+  { id: "4x6", label: "4x6 cm", width: 945, height: 1417, dpi: 600 },
+  { id: "3x4", label: "3x4 cm", width: 709, height: 945, dpi: 600 },
+];
 const wechatQrPayload = "https://u.wechat.com/kNE1QLDxXUun5q04_FphdtE?s=2";
 
 const progressStages = [
@@ -28,8 +32,8 @@ const progressStages = [
   { to: 52, duration: 56000, title: "Đang dựng ảnh thẻ chuyên nghiệp", note: "Giữ nhận diện nhất quán và làm sạch ánh sáng studio." },
   { to: 68, duration: 52000, title: "Đang xử lý nền trắng", note: "Tách nền, cân bằng viền tóc và làm phẳng background." },
   { to: 79, duration: 38000, title: "Đang tinh chỉnh chi tiết", note: "Cân chỉnh da, độ nét khuôn mặt và màu sắc tổng thể." },
-  { to: 88, duration: 30000, title: "Đang căn khung 4x6 cm", note: "Đặt tỉ lệ dọc, khoảng trống đầu và vai theo chuẩn ảnh thẻ." },
-  { to: 94, duration: 20000, title: "Đang chuẩn hóa file xuất", note: "Resize 945x1417 px, gắn 600 DPI và tối ưu dung lượng JPG." },
+  { to: 88, duration: 30000, title: "Đang căn khung ảnh thẻ", note: "Đặt tỉ lệ dọc, khoảng trống đầu và vai theo chuẩn ảnh thẻ." },
+  { to: 94, duration: 20000, title: "Đang chuẩn hóa file xuất", note: "Resize theo chế độ đã chọn, gắn 600 DPI và tối ưu dung lượng JPG." },
 ];
 
 function easeOutCubic(value) {
@@ -243,7 +247,7 @@ function ProgressConsole({ progress }) {
     ["Phân tích", 34],
     ["Dựng ảnh", 52],
     ["Nền trắng", 68],
-    ["4x6", 88],
+    ["Khung", 88],
     ["JPG", 94],
   ];
 
@@ -288,6 +292,7 @@ function App() {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [config, setConfig] = useState(null);
+  const [photoMode, setPhotoMode] = useState("4x6");
   const [outputFormat, setOutputFormat] = useState("jpg");
   const [isDragging, setIsDragging] = useState(false);
   const [isCompressing, setIsCompressing] = useState(false);
@@ -301,6 +306,8 @@ function App() {
         setConfig({
           model: "gpt-image-2",
           fallbackModel: "gpt-image-2",
+          defaultPhotoMode: "4x6",
+          photoModes: fallbackPhotoModes,
           target: { label: "4x6 cm", width: 945, height: 1417, dpi: 600 },
         });
       });
@@ -331,6 +338,11 @@ function App() {
     const processing = sessions.filter((session) => session.status === "processing").length;
     return { done, failed, queued, processing };
   }, [sessions]);
+  const photoModeOptions = config?.photoModes?.length ? config.photoModes : fallbackPhotoModes;
+  const selectedPhotoMode =
+    photoModeOptions.find((mode) => mode.id === photoMode) ||
+    photoModeOptions.find((mode) => mode.id === config?.defaultPhotoMode) ||
+    fallbackPhotoModes[0];
 
   useEffect(() => {
     if (activeSessionId) {
@@ -421,6 +433,7 @@ function App() {
     session.files.forEach((file) => formData.append("images", file));
     formData.append("outputFormat", session.outputFormat);
     formData.append("model", sessionModel);
+    formData.append("photoMode", session.photoMode || photoMode);
     const abortController = new AbortController();
     const requestTimeout = window.setTimeout(() => abortController.abort(), requestTimeoutMs);
 
@@ -556,6 +569,8 @@ function App() {
         name: `Session ${sessionNumber}`,
         files: sessionFiles,
         outputFormat,
+        photoMode,
+        photoModeLabel: selectedPhotoMode.label,
         model: config?.model || "gpt-image-2",
         retryCount: 0,
         status: "queued",
@@ -603,20 +618,34 @@ function App() {
           </div>
           <div>
             <h1>Photo ID Studio</h1>
-            <p>Ảnh thẻ 4x6 cm, 600 DPI</p>
           </div>
         </div>
 
         <div className="sidebar-spacer" />
 
         <section className="control-block">
+          <div className="photo-mode-control">
+            <span>Chế độ ảnh thẻ</span>
+            <div className="photo-mode-switch" aria-label="Chế độ ảnh thẻ">
+              {photoModeOptions.map((mode) => (
+                <button
+                  className={photoMode === mode.id ? "active" : ""}
+                  type="button"
+                  onClick={() => setPhotoMode(mode.id)}
+                  key={mode.id}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="preset-row">
             <span>Kích thước</span>
-            <strong>{config?.target?.width || 945} x {config?.target?.height || 1417}px</strong>
+            <strong>{selectedPhotoMode.width} x {selectedPhotoMode.height}px</strong>
           </div>
           <div className="preset-row">
             <span>DPI</span>
-            <strong>{config?.target?.dpi || 600}</strong>
+            <strong>{selectedPhotoMode.dpi}</strong>
           </div>
           <div className="format-switch" aria-label="Định dạng xuất ảnh">
             <button className={outputFormat === "png" ? "active" : ""} type="button" onClick={() => setOutputFormat("png")}>

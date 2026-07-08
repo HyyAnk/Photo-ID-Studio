@@ -4,7 +4,7 @@ import os from "node:os";
 import formidable from "formidable";
 
 import { log } from "../server/logger.js";
-import { getImageModels, processPhotoProduct } from "./_photo-service.js";
+import { defaultPhotoMode, getImageModels, getPhotoModePreset, processPhotoProduct } from "./_photo-service.js";
 
 export const config = {
   api: {
@@ -70,6 +70,8 @@ export default async function handler(request, response) {
     const outputFormatValue = firstValue(parsed.fields.outputFormat);
     const outputFormat = ["png", "jpg", "jpeg"].includes(outputFormatValue) ? outputFormatValue : "jpg";
     const requestedModel = firstValue(parsed.fields.model) || getImageModels()[0];
+    const requestedPhotoMode = firstValue(parsed.fields.photoMode) || defaultPhotoMode;
+    const requestedPreset = getPhotoModePreset(requestedPhotoMode);
 
     log("INFO", "Starting Vercel image processing request", {
       workerId,
@@ -77,7 +79,7 @@ export default async function handler(request, response) {
     });
     log(
       "INFO",
-      `Config: input_images=${uploadedFiles.length}, output_images=1, mode=reference_set, concurrency=1, method=Vercel Function + ShopAIKey images.edit, model=${requestedModel}, output=${outputFormat}`,
+      `Config: input_images=${uploadedFiles.length}, output_images=1, mode=reference_set, photo_mode=${requestedPreset.id}, concurrency=1, method=Vercel Function + ShopAIKey images.edit, model=${requestedModel}, output=${outputFormat}`,
       {
         workerId,
         step: "config",
@@ -94,7 +96,7 @@ export default async function handler(request, response) {
       return;
     }
 
-    const { jobId, retries, result } = await processPhotoProduct(uploadedFiles, outputFormat, workerId, requestedModel);
+    const { jobId, retries, result } = await processPhotoProduct(uploadedFiles, outputFormat, workerId, requestedModel, requestedPreset.id);
     const elapsedMs = Date.now() - startedAt;
 
     log("DONE", `Summary: total=1, success=1, failed=0, skipped=0, retries=${retries}, elapsed=${elapsedMs}ms`, {
@@ -116,6 +118,8 @@ export default async function handler(request, response) {
         skipped: 0,
         retries,
         model: requestedModel,
+        photoMode: requestedPreset.id,
+        target: requestedPreset,
         elapsedMs,
       },
     });

@@ -6,9 +6,24 @@ import sharp from "sharp";
 
 import { log } from "../server/logger.js";
 
-export const targetWidth = 945;
-export const targetHeight = 1417;
 export const targetDensity = 600;
+export const defaultPhotoMode = "4x6";
+export const photoModePresets = {
+  "4x6": {
+    id: "4x6",
+    label: "4x6 cm",
+    width: 945,
+    height: 1417,
+    dpi: targetDensity,
+  },
+  "3x4": {
+    id: "3x4",
+    label: "3x4 cm",
+    width: 709,
+    height: 945,
+    dpi: targetDensity,
+  },
+};
 export const generationSize = "1024x1536";
 
 const apiBaseUrl = process.env.SHOPAIKEY_BASE_URL || "https://direct.shopaikey.com/v1";
@@ -21,32 +36,33 @@ const fallbackImageModel =
     : process.env.SHOPAIKEY_FALLBACK_IMAGE_MODEL || defaultImageModel;
 const imageRequestTimeoutMs = Number(process.env.SHOPAIKEY_IMAGE_TIMEOUT_MS || 290000);
 
-const studioPrompt = `
+function buildStudioPrompt(preset) {
+  return `
 Create exactly one professional Vietnamese ID photo from the uploaded reference images of the same person.
 Use all uploaded images as references for the same person's identity, face shape, age, skin tone, hairstyle, and natural expression.
 Do not create multiple output photos, a collage, a contact sheet, or a multi-person image.
 Choose the best consistent facial identity from the references and produce one clean official portrait.
 Use a pure white background, realistic studio lighting, sharp facial details, and a polished professional ID photo look.
-Frame as a vertical 4x6 cm ID photo: head and upper shoulders visible, centered face, straight posture, natural proportions.
+Frame as a vertical ${preset.label} ID photo for final output ${preset.width}x${preset.height} px at ${preset.dpi} DPI.
+Keep the head and upper shoulders visible, centered face, straight posture, and natural proportions for a ${preset.label} official portrait.
 Do not add text, borders, watermark, extra people, props, hats, sunglasses, or decorative background.
 Final image should be suitable for official ID/passport-style printing.
 `.trim();
+}
 
 export function getPublicConfig() {
+  const defaultPreset = getPhotoModePreset(defaultPhotoMode);
   return {
     model: imageModel,
     fallbackModel: fallbackImageModel,
     baseUrl: apiBaseUrl.replace(/^https?:\/\//, ""),
     fallbackBaseUrl: fallbackApiBaseUrl.replace(/^https?:\/\//, ""),
     generationSize,
+    defaultPhotoMode,
+    photoModes: Object.values(photoModePresets),
     uploadMode: "client_compressed_multipart",
     resultMode: "inline_data_url",
-    target: {
-      label: "4x6 cm",
-      width: targetWidth,
-      height: targetHeight,
-      dpi: targetDensity,
-    },
+    target: defaultPreset,
     outputMode: "reference_set_to_single_photo",
   };
 }
@@ -65,6 +81,10 @@ function getApiBaseUrls() {
 
 export function getImageModels() {
   return [...new Set([imageModel, fallbackImageModel].filter(Boolean))];
+}
+
+export function getPhotoModePreset(photoMode) {
+  return photoModePresets[photoMode] || photoModePresets[defaultPhotoMode];
 }
 
 function getClient(baseURL, timeout = imageRequestTimeoutMs) {
@@ -97,14 +117,14 @@ async function imageResponseToBuffer(item) {
   throw new Error("The image API did not return b64_json or url.");
 }
 
-async function normalizeImage(buffer, outputFormat) {
+async function normalizeImage(buffer, outputFormat, preset) {
   const pipeline = sharp(buffer)
-    .resize(targetWidth, targetHeight, {
+    .resize(preset.width, preset.height, {
       fit: "cover",
       position: "center",
       withoutEnlargement: false,
     })
-    .withMetadata({ density: targetDensity });
+    .withMetadata({ density: preset.dpi });
 
   if (outputFormat === "jpg" || outputFormat === "jpeg") {
     return pipeline.jpeg({ quality: 94, mozjpeg: true }).toBuffer();
@@ -123,7 +143,7 @@ function safeBaseName(fileName) {
   );
 }
 
-async function editImageSetWithFallback(files, stepContext, models = [imageModel]) {
+async function editImageSetWithFallback(files, stepContext, prompt, models = [imageModel]) {
   const baseUrls = getApiBaseUrls();
   const startedAt = Date.now();
   let lastError = null;
@@ -158,7 +178,7 @@ async function editImageSetWithFallback(files, stepContext, models = [imageModel
           response: await client.images.edit({
             model,
             image: streams,
-            prompt: studioPrompt,
+            prompt,
             size: generationSize,
             quality: "high",
             output_format: "png",
@@ -194,8 +214,9 @@ async function editImageSetWithFallback(files, stepContext, models = [imageModel
   throw new Error(`Could not connect to ShopAIKey after ${models.length} model and ${baseUrls.length} endpoint attempt(s).${detail}`);
 }
 
-export async function processPhotoProduct(files, outputFormat, workerId, requestedModel = imageModel) {
+export async function processPhotoProduct(files, outputFormat, workerId, requestedModel = imageModel, photoMode = defaultPhotoMode) {
   const jobId = randomUUID();
+  const preset = getPhotoModePreset(photoMode);
   const stepContext = {
     workerId,
     profileId: jobId,
@@ -207,16 +228,16 @@ export async function processPhotoProduct(files, outputFormat, workerId, request
     style: "step",
   });
 
-  const { response, retries, model } = await editImageSetWithFallback(files, stepContext, [requestedModel]);
+  const { response, retries, model } = await editImageSetWithFallback(files, stepContext, buildStudioPrompt(preset), [requestedModel]);
 
-  log("STEP", `Normalizing result from model ${model} to 945x1417 px at 600 DPI`, {
+  log("STEP", `Normalizing result from model ${model} to ${preset.width}x${preset.height} px at ${preset.dpi} DPI`, {
     ...stepContext,
-    step: "normalize_4x6",
+    step: `normalize_${preset.id}`,
     style: "step",
   });
 
   const generatedBuffer = await imageResponseToBuffer(response.data?.[0]);
-  const normalizedBuffer = await normalizeImage(generatedBuffer, outputFormat);
+  const normalizedBuffer = await normalizeImage(generatedBuffer, outputFormat, preset);
   const extension = outputFormat === "jpg" || outputFormat === "jpeg" ? "jpg" : "png";
   const mimeType = extension === "jpg" ? "image/jpeg" : "image/png";
   const originalName = files[0]?.originalFilename || "photo-id";
@@ -239,9 +260,11 @@ export async function processPhotoProduct(files, outputFormat, workerId, request
       fileName,
       jobId,
       url: dataUrl,
-      width: targetWidth,
-      height: targetHeight,
-      dpi: targetDensity,
+      photoMode: preset.id,
+      photoModeLabel: preset.label,
+      width: preset.width,
+      height: preset.height,
+      dpi: preset.dpi,
       format: extension,
       bytes: normalizedBuffer.length,
       model,

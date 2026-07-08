@@ -19,9 +19,24 @@ const uploadDir = path.join(projectRoot, "uploads");
 const resultDir = path.join(projectRoot, "result");
 const distDir = path.join(projectRoot, "dist");
 
-const targetWidth = 945;
-const targetHeight = 1417;
 const targetDensity = 600;
+const defaultPhotoMode = "4x6";
+const photoModePresets = {
+  "4x6": {
+    id: "4x6",
+    label: "4x6 cm",
+    width: 945,
+    height: 1417,
+    dpi: targetDensity,
+  },
+  "3x4": {
+    id: "3x4",
+    label: "3x4 cm",
+    width: 709,
+    height: 945,
+    dpi: targetDensity,
+  },
+};
 const generationSize = "1024x1536";
 const apiBaseUrl = process.env.SHOPAIKEY_BASE_URL || "https://direct.shopaikey.com/v1";
 const fallbackApiBaseUrl = process.env.SHOPAIKEY_FALLBACK_BASE_URL || "https://api.shopaikey.com/v1";
@@ -57,16 +72,19 @@ app.use(express.json());
 app.use("/result", express.static(resultDir));
 app.use(express.static(distDir));
 
-const studioPrompt = `
+function buildStudioPrompt(preset) {
+  return `
 Create exactly one professional Vietnamese ID photo from the uploaded reference images of the same person.
 Use all uploaded images as references for the same person's identity, face shape, age, skin tone, hairstyle, and natural expression.
 Do not create multiple output photos, a collage, a contact sheet, or a multi-person image.
 Choose the best consistent facial identity from the references and produce one clean official portrait.
 Use a pure white background, realistic studio lighting, sharp facial details, and a polished professional ID photo look.
-Frame as a vertical 4x6 cm ID photo: head and upper shoulders visible, centered face, straight posture, natural proportions.
+Frame as a vertical ${preset.label} ID photo for final output ${preset.width}x${preset.height} px at ${preset.dpi} DPI.
+Keep the head and upper shoulders visible, centered face, straight posture, and natural proportions for a ${preset.label} official portrait.
 Do not add text, borders, watermark, extra people, props, hats, sunglasses, or decorative background.
 Final image should be suitable for official ID/passport-style printing.
 `.trim();
+}
 
 function ensureConfig() {
   if (!process.env.SHOPAIKEY_API_KEY) {
@@ -82,6 +100,10 @@ function getApiBaseUrls() {
 
 function getImageModels() {
   return [...new Set([imageModel, fallbackImageModel].filter(Boolean))];
+}
+
+function getPhotoModePreset(photoMode) {
+  return photoModePresets[photoMode] || photoModePresets[defaultPhotoMode];
 }
 
 function getClient(baseURL, timeout = imageRequestTimeoutMs) {
@@ -114,14 +136,14 @@ async function imageResponseToBuffer(item) {
   throw new Error("API khong tra ve b64_json hoac url cho anh ket qua.");
 }
 
-async function normalizeImage(buffer, outputFormat) {
+async function normalizeImage(buffer, outputFormat, preset) {
   const pipeline = sharp(buffer)
-    .resize(targetWidth, targetHeight, {
+    .resize(preset.width, preset.height, {
       fit: "cover",
       position: "center",
       withoutEnlargement: false,
     })
-    .withMetadata({ density: targetDensity });
+    .withMetadata({ density: preset.dpi });
 
   if (outputFormat === "jpg" || outputFormat === "jpeg") {
     return pipeline.jpeg({ quality: 96, mozjpeg: true }).toBuffer();
@@ -144,7 +166,7 @@ function safeBaseName(fileName) {
   );
 }
 
-async function editImageSetWithFallback(files, stepContext, models = [imageModel]) {
+async function editImageSetWithFallback(files, stepContext, prompt, models = [imageModel]) {
   const baseUrls = getApiBaseUrls();
   const startedAt = Date.now();
   let lastError = null;
@@ -179,7 +201,7 @@ async function editImageSetWithFallback(files, stepContext, models = [imageModel
           response: await client.images.edit({
             model,
             image: streams,
-            prompt: studioPrompt,
+            prompt,
             size: generationSize,
             quality: "high",
             output_format: "png",
@@ -215,7 +237,8 @@ async function editImageSetWithFallback(files, stepContext, models = [imageModel
   throw new Error(`Khong ket noi duoc ShopAIKey sau khi thu ${models.length} model va ${baseUrls.length} endpoint.${detail}`);
 }
 
-async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResultDir, requestedModel) {
+async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResultDir, requestedModel, photoMode) {
+  const preset = getPhotoModePreset(photoMode);
   const stepContext = {
     workerId,
     profileId: jobId,
@@ -227,16 +250,16 @@ async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResu
     style: "step",
   });
 
-  const { response, retries, model } = await editImageSetWithFallback(files, stepContext, [requestedModel]);
+  const { response, retries, model } = await editImageSetWithFallback(files, stepContext, buildStudioPrompt(preset), [requestedModel]);
 
-  log("STEP", `Chuan hoa 1 anh ket qua tu model ${model} ve 945x1417 px, 600 DPI`, {
+  log("STEP", `Chuan hoa 1 anh ket qua tu model ${model} ve ${preset.width}x${preset.height} px, ${preset.dpi} DPI`, {
     ...stepContext,
-    step: "normalize_4x6",
+    step: `normalize_${preset.id}`,
     style: "step",
   });
 
   const generatedBuffer = await imageResponseToBuffer(response.data?.[0]);
-  const normalizedBuffer = await normalizeImage(generatedBuffer, outputFormat);
+  const normalizedBuffer = await normalizeImage(generatedBuffer, outputFormat, preset);
   const extension = outputFormat === "jpg" || outputFormat === "jpeg" ? "jpg" : "png";
   const fileName = `${safeBaseName(files[0].originalname)}-id-photo-${Date.now()}.${extension}`;
   const outputPath = path.join(jobResultDir, fileName);
@@ -257,9 +280,11 @@ async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResu
       fileName,
       jobId,
       url: publicResultPath(jobId, fileName),
-      width: targetWidth,
-      height: targetHeight,
-      dpi: targetDensity,
+      photoMode: preset.id,
+      photoModeLabel: preset.label,
+      width: preset.width,
+      height: preset.height,
+      dpi: preset.dpi,
       format: extension,
       model,
     },
@@ -268,18 +293,16 @@ async function processPhotoProduct(files, outputFormat, workerId, jobId, jobResu
 }
 
 app.get("/api/config", (request, response) => {
+  const defaultPreset = getPhotoModePreset(defaultPhotoMode);
   response.json({
     model: imageModel,
     fallbackModel: fallbackImageModel,
     baseUrl: apiBaseUrl.replace(/^https?:\/\//, ""),
     fallbackBaseUrl: fallbackApiBaseUrl.replace(/^https?:\/\//, ""),
     generationSize,
-    target: {
-      label: "4x6 cm",
-      width: targetWidth,
-      height: targetHeight,
-      dpi: targetDensity,
-    },
+    defaultPhotoMode,
+    photoModes: Object.values(photoModePresets),
+    target: defaultPreset,
     outputMode: "reference_set_to_single_photo",
   });
 });
@@ -293,6 +316,8 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
     ? request.body.outputFormat
     : "jpg";
   const requestedModel = request.body.model || imageModel;
+  const requestedPhotoMode = request.body.photoMode || defaultPhotoMode;
+  const requestedPreset = getPhotoModePreset(requestedPhotoMode);
   const workerId = `run-${startedAt}`;
 
   log("INFO", "Khoi dong luot xu ly anh the", {
@@ -300,7 +325,7 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
     profileId: jobId,
     step: "startup",
   });
-  log("INFO", `Config: input_images=${files.length}, output_images=1, mode=reference_set, concurrency=1, method=ShopAIKey images.edit, model=${requestedModel}, primary_model=${imageModel}, fallback_model=${fallbackImageModel}, timeout=${imageRequestTimeoutMs}ms, size=${generationSize}, output=${outputFormat}`, {
+  log("INFO", `Config: input_images=${files.length}, output_images=1, mode=reference_set, photo_mode=${requestedPreset.id}, concurrency=1, method=ShopAIKey images.edit, model=${requestedModel}, primary_model=${imageModel}, fallback_model=${fallbackImageModel}, timeout=${imageRequestTimeoutMs}ms, size=${generationSize}, output=${outputFormat}`, {
     workerId,
     step: "config",
   });
@@ -323,7 +348,7 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
     let failed = 0;
 
     try {
-      const processed = await processPhotoProduct(files, outputFormat, workerId, jobId, jobResultDir, requestedModel);
+      const processed = await processPhotoProduct(files, outputFormat, workerId, jobId, jobResultDir, requestedModel, requestedPreset.id);
       result = processed.result;
       retries = processed.retries;
     } catch (error) {
@@ -337,6 +362,8 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
       result = {
         originalName: `${files.length} anh tham chieu`,
         sourceCount: files.length,
+        photoMode: requestedPreset.id,
+        photoModeLabel: requestedPreset.label,
         error: error.message,
       };
     }
@@ -361,6 +388,8 @@ app.post("/api/process", upload.array("images", 4), async (request, response) =>
         skipped: 0,
         retries,
         model: requestedModel,
+        photoMode: requestedPreset.id,
+        target: requestedPreset,
         elapsedMs,
       },
     });
