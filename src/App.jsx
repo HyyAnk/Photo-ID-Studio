@@ -468,8 +468,6 @@ function App() {
         results: payload.results || [],
         summary: payload.summary,
         message: hasFailure ? failureMessage : "Da co anh ket qua",
-        message: hasFailure ? "Một số ảnh chưa xử lý được" : "Đã có ảnh kết quả",
-        message: hasFailure ? failureMessage : "Da co anh ket qua",
       });
     } catch (error) {
       const isFinalRetry = (session.retryCount || 0) >= maxRetryAttempts;
@@ -480,7 +478,6 @@ function App() {
           : error.message;
       updateSession(session.id, {
         status: "failed",
-        results: [],
         results: [
           {
             originalName: `${session.files.length} ảnh tham chiếu`,
@@ -493,7 +490,6 @@ function App() {
           note: "Server đã trả lỗi. Vui lòng kiểm tra thông báo và thử lại sau.",
           detail: "Lượt xử lý đã dừng",
         },
-        results: [],
         message: errorMessage,
       });
     } finally {
@@ -535,11 +531,6 @@ function App() {
     } finally {
       setIsCompressing(false);
     }
-    return;
-
-    const mapped = acceptedFiles.map((file) => Object.assign(file, { previewUrl: URL.createObjectURL(file) }));
-    setFiles((current) => [...current, ...mapped]);
-    setMessage(imageFiles.length ? "" : "File không hợp lệ. Vui lòng chọn ảnh.");
   }
 
   function removeFile(index) {
@@ -726,7 +717,7 @@ function App() {
                   <article className={`result-card clean-result-card ${item.error ? "failed" : ""}`} key={`${item.sessionId}-${item.fileName || item.originalName}-${index}`}>
                     {item.url ? (
                       <>
-                        <div className="photo-frame">
+                        <div className="photo-frame" style={{ aspectRatio: `${item.width || 945} / ${item.height || 1417}` }}>
                           <img src={item.url} alt={`Ảnh thẻ ${item.sessionName}`} />
                           <div className="result-hover-title">{item.sessionName}</div>
                           <a className="result-download-icon" href={item.url} download={item.fileName} aria-label={`Tải ảnh ${item.sessionName}`}>
